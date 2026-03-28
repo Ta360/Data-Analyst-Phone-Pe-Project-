@@ -1,0 +1,601 @@
+# PhonePe Transaction Insights — Step-by-Step Code Guide
+
+---
+
+## STEP 1: Install Required Libraries
+
+```bash
+pip install pandas sqlalchemy psycopg2-binary matplotlib seaborn streamlit plotly gitpython
+```
+
+---
+
+## STEP 2: Clone the PhonePe Pulse GitHub Repository
+
+```python
+# clone_data.py
+import subprocess
+import os
+
+REPO_URL = "https://github.com/PhonePe/pulse.git"
+CLONE_DIR = "phonepe_pulse"
+
+if not os.path.exists(CLONE_DIR):
+    print("Cloning PhonePe Pulse repository...")
+    subprocess.run(["git", "clone", REPO_URL, CLONE_DIR], check=True)
+    print("Clone complete!")
+else:
+    print("Repository already cloned.")
+```
+
+---
+
+## STEP 3: Setup PostgreSQL Database & Create Tables
+
+```sql
+-- Run this in your PostgreSQL client (psql or pgAdmin)
+
+CREATE DATABASE phonepe_db;
+
+\c phonepe_db
+
+-- Aggregated Tables
+CREATE TABLE aggregated_transaction (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    transaction_type VARCHAR(100),
+    transaction_count BIGINT,
+    transaction_amount NUMERIC(20, 2)
+);
+
+CREATE TABLE aggregated_user (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    brand           VARCHAR(100),
+    user_count      BIGINT,
+    user_percentage NUMERIC(10, 4)
+);
+
+CREATE TABLE aggregated_insurance (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    insurance_type  VARCHAR(100),
+    insurance_count BIGINT,
+    insurance_amount NUMERIC(20, 2)
+);
+
+-- Map Tables
+CREATE TABLE map_transaction (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    district        VARCHAR(100),
+    transaction_count BIGINT,
+    transaction_amount NUMERIC(20, 2)
+);
+
+CREATE TABLE map_user (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    district        VARCHAR(100),
+    registered_users BIGINT,
+    app_opens       BIGINT
+);
+
+CREATE TABLE map_insurance (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    district        VARCHAR(100),
+    insurance_count BIGINT,
+    insurance_amount NUMERIC(20, 2)
+);
+
+-- Top Tables
+CREATE TABLE top_transaction (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    pincode         VARCHAR(20),
+    transaction_count BIGINT,
+    transaction_amount NUMERIC(20, 2)
+);
+
+CREATE TABLE top_user (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    pincode         VARCHAR(20),
+    registered_users BIGINT
+);
+
+CREATE TABLE top_insurance (
+    state           VARCHAR(100),
+    year            INT,
+    quarter         INT,
+    pincode         VARCHAR(20),
+    insurance_count BIGINT,
+    insurance_amount NUMERIC(20, 2)
+);
+```
+
+---
+
+## STEP 4: Extract & Load Data from JSON to SQL (ETL)
+
+```python
+# etl_load.py
+import os
+import json
+import pandas as pd
+from sqlalchemy import create_engine
+
+# ── DB Connection ──────────────────────────────────────────────────────────────
+DB_URL = "postgresql://postgres:yourpassword@localhost:5432/phonepe_db"
+engine = create_engine(DB_URL)
+BASE   = "phonepe_pulse/data"
+
+# ── Helper ─────────────────────────────────────────────────────────────────────
+def load_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4A. AGGREGATED TRANSACTION
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_aggregated_transaction():
+    records = []
+    root = os.path.join(BASE, "aggregated", "transaction", "country", "india", "state")
+    for state in os.listdir(root):
+        for year in os.listdir(os.path.join(root, state)):
+            for file in os.listdir(os.path.join(root, state, year)):
+                quarter = int(file.replace(".json", ""))
+                data    = load_json(os.path.join(root, state, year, file))
+                for txn in data["data"]["transactionData"]:
+                    records.append({
+                        "state": state,
+                        "year": int(year),
+                        "quarter": quarter,
+                        "transaction_type": txn["name"],
+                        "transaction_count": txn["paymentInstruments"][0]["count"],
+                        "transaction_amount": txn["paymentInstruments"][0]["amount"]
+                    })
+    df = pd.DataFrame(records)
+    df.to_sql("aggregated_transaction", engine, if_exists="replace", index=False)
+    print(f"aggregated_transaction loaded: {len(df)} rows")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4B. AGGREGATED USER
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_aggregated_user():
+    records = []
+    root = os.path.join(BASE, "aggregated", "user", "country", "india", "state")
+    for state in os.listdir(root):
+        for year in os.listdir(os.path.join(root, state)):
+            for file in os.listdir(os.path.join(root, state, year)):
+                quarter = int(file.replace(".json", ""))
+                data    = load_json(os.path.join(root, state, year, file))
+                users   = data["data"].get("usersByDevice") or []
+                for u in users:
+                    records.append({
+                        "state": state,
+                        "year": int(year),
+                        "quarter": quarter,
+                        "brand": u["brand"],
+                        "user_count": u["count"],
+                        "user_percentage": u["percentage"]
+                    })
+    df = pd.DataFrame(records)
+    df.to_sql("aggregated_user", engine, if_exists="replace", index=False)
+    print(f"aggregated_user loaded: {len(df)} rows")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4C. AGGREGATED INSURANCE
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_aggregated_insurance():
+    records = []
+    root = os.path.join(BASE, "aggregated", "insurance", "country", "india", "state")
+    for state in os.listdir(root):
+        for year in os.listdir(os.path.join(root, state)):
+            for file in os.listdir(os.path.join(root, state, year)):
+                quarter = int(file.replace(".json", ""))
+                data    = load_json(os.path.join(root, state, year, file))
+                for ins in data["data"]["transactionData"]:
+                    records.append({
+                        "state": state,
+                        "year": int(year),
+                        "quarter": quarter,
+                        "insurance_type": ins["name"],
+                        "insurance_count": ins["paymentInstruments"][0]["count"],
+                        "insurance_amount": ins["paymentInstruments"][0]["amount"]
+                    })
+    df = pd.DataFrame(records)
+    df.to_sql("aggregated_insurance", engine, if_exists="replace", index=False)
+    print(f"aggregated_insurance loaded: {len(df)} rows")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4D. MAP TRANSACTION
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_map_transaction():
+    records = []
+    root = os.path.join(BASE, "map", "transaction", "hover", "country", "india", "state")
+    for state in os.listdir(root):
+        for year in os.listdir(os.path.join(root, state)):
+            for file in os.listdir(os.path.join(root, state, year)):
+                quarter = int(file.replace(".json", ""))
+                data    = load_json(os.path.join(root, state, year, file))
+                for dist in data["data"]["hoverDataList"]:
+                    records.append({
+                        "state": state,
+                        "year": int(year),
+                        "quarter": quarter,
+                        "district": dist["name"],
+                        "transaction_count": dist["metric"][0]["count"],
+                        "transaction_amount": dist["metric"][0]["amount"]
+                    })
+    df = pd.DataFrame(records)
+    df.to_sql("map_transaction", engine, if_exists="replace", index=False)
+    print(f"map_transaction loaded: {len(df)} rows")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4E. MAP USER
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_map_user():
+    records = []
+    root = os.path.join(BASE, "map", "user", "hover", "country", "india", "state")
+    for state in os.listdir(root):
+        for year in os.listdir(os.path.join(root, state)):
+            for file in os.listdir(os.path.join(root, state, year)):
+                quarter = int(file.replace(".json", ""))
+                data    = load_json(os.path.join(root, state, year, file))
+                for dist in data["data"]["hoverData"].items():
+                    records.append({
+                        "state": state,
+                        "year": int(year),
+                        "quarter": quarter,
+                        "district": dist[0],
+                        "registered_users": dist[1]["registeredUsers"],
+                        "app_opens": dist[1]["appOpens"]
+                    })
+    df = pd.DataFrame(records)
+    df.to_sql("map_user", engine, if_exists="replace", index=False)
+    print(f"map_user loaded: {len(df)} rows")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4F. TOP TRANSACTION
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_top_transaction():
+    records = []
+    root = os.path.join(BASE, "top", "transaction", "country", "india", "state")
+    for state in os.listdir(root):
+        for year in os.listdir(os.path.join(root, state)):
+            for file in os.listdir(os.path.join(root, state, year)):
+                quarter = int(file.replace(".json", ""))
+                data    = load_json(os.path.join(root, state, year, file))
+                for item in data["data"]["pincodes"]:
+                    records.append({
+                        "state": state,
+                        "year": int(year),
+                        "quarter": quarter,
+                        "pincode": item["entityName"],
+                        "transaction_count": item["metric"]["count"],
+                        "transaction_amount": item["metric"]["amount"]
+                    })
+    df = pd.DataFrame(records)
+    df.to_sql("top_transaction", engine, if_exists="replace", index=False)
+    print(f"top_transaction loaded: {len(df)} rows")
+
+# ── Run all ETL functions ───────────────────────────────────────────────────
+if __name__ == "__main__":
+    extract_aggregated_transaction()
+    extract_aggregated_user()
+    extract_aggregated_insurance()
+    extract_map_transaction()
+    extract_map_user()
+    extract_top_transaction()
+    print("\n All data loaded into PostgreSQL successfully!")
+```
+
+---
+
+## STEP 5: SQL Queries for Business Analysis
+
+```sql
+-- ── 1. Total transaction amount by type ──────────────────────────────────────
+SELECT transaction_type,
+       SUM(transaction_count)  AS total_count,
+       ROUND(SUM(transaction_amount), 2) AS total_amount
+FROM aggregated_transaction
+GROUP BY transaction_type
+ORDER BY total_amount DESC;
+
+-- ── 2. Top 10 states by transaction amount ────────────────────────────────────
+SELECT state,
+       SUM(transaction_count)  AS total_count,
+       ROUND(SUM(transaction_amount), 2) AS total_amount
+FROM aggregated_transaction
+GROUP BY state
+ORDER BY total_amount DESC
+LIMIT 10;
+
+-- ── 3. Year-wise transaction trend ───────────────────────────────────────────
+SELECT year,
+       SUM(transaction_count)  AS total_count,
+       ROUND(SUM(transaction_amount), 2) AS total_amount
+FROM aggregated_transaction
+GROUP BY year
+ORDER BY year;
+
+-- ── 4. Top 10 districts by transaction amount ─────────────────────────────────
+SELECT state, district,
+       SUM(transaction_count)  AS total_count,
+       ROUND(SUM(transaction_amount), 2) AS total_amount
+FROM map_transaction
+GROUP BY state, district
+ORDER BY total_amount DESC
+LIMIT 10;
+
+-- ── 5. Top mobile brands by registered users ──────────────────────────────────
+SELECT brand,
+       SUM(user_count) AS total_users
+FROM aggregated_user
+GROUP BY brand
+ORDER BY total_users DESC
+LIMIT 10;
+
+-- ── 6. Quarterly performance per year ────────────────────────────────────────
+SELECT year, quarter,
+       ROUND(SUM(transaction_amount), 2) AS total_amount
+FROM aggregated_transaction
+GROUP BY year, quarter
+ORDER BY year, quarter;
+
+-- ── 7. Top 10 pincodes by transaction amount ──────────────────────────────────
+SELECT state, pincode,
+       SUM(transaction_count)  AS total_count,
+       ROUND(SUM(transaction_amount), 2) AS total_amount
+FROM top_transaction
+GROUP BY state, pincode
+ORDER BY total_amount DESC
+LIMIT 10;
+
+-- ── 8. State-wise registered users ───────────────────────────────────────────
+SELECT state,
+       SUM(registered_users) AS total_registered_users,
+       SUM(app_opens)        AS total_app_opens
+FROM map_user
+GROUP BY state
+ORDER BY total_registered_users DESC;
+
+-- ── 9. Insurance transactions by state ───────────────────────────────────────
+SELECT state,
+       SUM(insurance_count)  AS total_count,
+       ROUND(SUM(insurance_amount), 2) AS total_amount
+FROM aggregated_insurance
+GROUP BY state
+ORDER BY total_amount DESC;
+```
+
+---
+
+## STEP 6: Python Data Analysis
+
+```python
+# analysis.py
+import pandas as pd
+from sqlalchemy import create_engine
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+DB_URL = "postgresql://postgres:yourpassword@localhost:5432/phonepe_db"
+engine = create_engine(DB_URL)
+
+# ── Load data ──────────────────────────────────────────────────────────────────
+df_txn   = pd.read_sql("SELECT * FROM aggregated_transaction", engine)
+df_user  = pd.read_sql("SELECT * FROM aggregated_user", engine)
+df_map   = pd.read_sql("SELECT * FROM map_transaction", engine)
+
+# ── Plot 1: Transaction amount by type ────────────────────────────────────────
+type_grp = df_txn.groupby("transaction_type")["transaction_amount"].sum().sort_values()
+plt.figure(figsize=(10, 6))
+type_grp.plot(kind="barh", color="steelblue")
+plt.title("Total Transaction Amount by Type")
+plt.xlabel("Amount (₹)")
+plt.tight_layout()
+plt.savefig("txn_by_type.png")
+plt.show()
+
+# ── Plot 2: Top 10 states ─────────────────────────────────────────────────────
+top_states = df_txn.groupby("state")["transaction_amount"].sum().nlargest(10)
+plt.figure(figsize=(10, 6))
+top_states.plot(kind="bar", color="coral")
+plt.title("Top 10 States by Transaction Amount")
+plt.ylabel("Amount (₹)")
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.savefig("top_states.png")
+plt.show()
+
+# ── Plot 3: Year-wise trend line ───────────────────────────────────────────────
+year_grp = df_txn.groupby("year")["transaction_amount"].sum()
+plt.figure(figsize=(8, 5))
+year_grp.plot(kind="line", marker="o", color="green")
+plt.title("Year-wise Transaction Trend")
+plt.ylabel("Amount (₹)")
+plt.tight_layout()
+plt.savefig("yearly_trend.png")
+plt.show()
+
+# ── Plot 4: Mobile brand share (pie) ─────────────────────────────────────────
+brand_grp = df_user.groupby("brand")["user_count"].sum().nlargest(8)
+plt.figure(figsize=(8, 8))
+brand_grp.plot(kind="pie", autopct="%1.1f%%")
+plt.title("Top Mobile Brands by User Count")
+plt.ylabel("")
+plt.tight_layout()
+plt.savefig("brand_pie.png")
+plt.show()
+
+print("✅ All charts saved!")
+```
+
+---
+
+## STEP 7: Streamlit Dashboard
+
+```python
+# app.py
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from sqlalchemy import create_engine
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(page_title="PhonePe Insights", layout="wide", page_icon="📱")
+st.title("📱 PhonePe Transaction Insights Dashboard")
+
+DB_URL = "postgresql://postgres:yourpassword@localhost:5432/phonepe_db"
+
+@st.cache_data
+def load(query):
+    engine = create_engine(DB_URL)
+    return pd.read_sql(query, engine)
+
+# ── Sidebar filters ───────────────────────────────────────────────────────────
+st.sidebar.header("Filters")
+df_raw  = load("SELECT * FROM aggregated_transaction")
+years   = sorted(df_raw["year"].unique())
+year    = st.sidebar.selectbox("Select Year", ["All"] + years)
+quarter = st.sidebar.selectbox("Select Quarter", ["All", 1, 2, 3, 4])
+
+df = df_raw.copy()
+if year != "All":
+    df = df[df["year"] == year]
+if quarter != "All":
+    df = df[df["quarter"] == quarter]
+
+# ── KPI cards ────────────────────────────────────────────────────────────────
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Transactions", f"{df['transaction_count'].sum():,.0f}")
+col2.metric("Total Amount (₹ Cr)", f"{df['transaction_amount'].sum()/1e7:,.2f}")
+col3.metric("States Covered", df["state"].nunique())
+
+st.markdown("---")
+
+# ── Tab layout ────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📊 Transactions", "🗺️ Map View", "👥 Users", "🛡️ Insurance"])
+
+# TAB 1 — Transactions
+with tab1:
+    c1, c2 = st.columns(2)
+
+    # Bar: Transaction type
+    type_grp = df.groupby("transaction_type")["transaction_amount"].sum().reset_index()
+    fig1 = px.bar(type_grp, x="transaction_type", y="transaction_amount",
+                  title="Transaction Amount by Type", color="transaction_type")
+    c1.plotly_chart(fig1, use_container_width=True)
+
+    # Bar: Top states
+    state_grp = df.groupby("state")["transaction_amount"].sum().nlargest(10).reset_index()
+    fig2 = px.bar(state_grp, x="transaction_amount", y="state", orientation="h",
+                  title="Top 10 States by Amount", color="transaction_amount",
+                  color_continuous_scale="Blues")
+    c2.plotly_chart(fig2, use_container_width=True)
+
+    # Line: Year/quarter trend
+    trend = df_raw.groupby(["year", "quarter"])["transaction_amount"].sum().reset_index()
+    trend["period"] = trend["year"].astype(str) + " Q" + trend["quarter"].astype(str)
+    fig3 = px.line(trend, x="period", y="transaction_amount",
+                   title="Quarterly Transaction Trend", markers=True)
+    st.plotly_chart(fig3, use_container_width=True)
+
+# TAB 2 — Map View
+with tab2:
+    map_df = load("SELECT state, SUM(transaction_amount) AS total FROM map_transaction GROUP BY state")
+    fig_map = px.choropleth(
+        map_df,
+        geojson="https://gist.githubusercontent.com/jbrobst/56c13bbbf9d97d187fea01ca62ea5112/raw/e388c4cae20aa53cb5090210a42ebb9b765c0a36/india_states.geojson",
+        featureidkey="properties.ST_NM",
+        locations="state",
+        color="total",
+        color_continuous_scale="Viridis",
+        title="State-wise Transaction Amount"
+    )
+    fig_map.update_geos(fitbounds="locations", visible=False)
+    st.plotly_chart(fig_map, use_container_width=True)
+
+# TAB 3 — Users
+with tab3:
+    user_df  = load("SELECT * FROM aggregated_user")
+    brand_df = user_df.groupby("brand")["user_count"].sum().nlargest(10).reset_index()
+    fig_b = px.pie(brand_df, names="brand", values="user_count",
+                   title="Top 10 Mobile Brands by User Count")
+    st.plotly_chart(fig_b, use_container_width=True)
+
+    mu_df = load("""
+        SELECT state, SUM(registered_users) AS reg_users, SUM(app_opens) AS app_opens
+        FROM map_user GROUP BY state ORDER BY reg_users DESC LIMIT 15
+    """)
+    fig_mu = px.bar(mu_df, x="state", y=["reg_users", "app_opens"],
+                    barmode="group", title="Top 15 States — Registered Users vs App Opens")
+    st.plotly_chart(fig_mu, use_container_width=True)
+
+# TAB 4 — Insurance
+with tab4:
+    ins_df = load("""
+        SELECT state, SUM(insurance_count) AS count, SUM(insurance_amount) AS amount
+        FROM aggregated_insurance GROUP BY state ORDER BY amount DESC LIMIT 10
+    """)
+    fig_i = px.bar(ins_df, x="state", y="amount",
+                   title="Top 10 States by Insurance Amount", color="amount",
+                   color_continuous_scale="Reds")
+    st.plotly_chart(fig_i, use_container_width=True)
+
+st.sidebar.markdown("---")
+st.sidebar.info("Data Source: PhonePe Pulse GitHub")
+```
+
+---
+
+## STEP 8: Run the Streamlit App
+
+```bash
+streamlit run app.py
+```
+
+Visit **http://localhost:8501** in your browser.
+
+---
+
+## Project Folder Structure
+
+```
+phonepe_project/
+├── phonepe_pulse/          # Cloned GitHub repo (data)
+├── clone_data.py           # Step 2 — Clone repo
+├── etl_load.py             # Step 4 — Extract & load JSON → SQL
+├── analysis.py             # Step 6 — Charts with matplotlib
+├── app.py                  # Step 7 — Streamlit dashboard
+├── schema.sql              # Step 3 — SQL table definitions
+└── requirements.txt
+```
+
+## requirements.txt
+
+```
+pandas
+sqlalchemy
+psycopg2-binary
+matplotlib
+seaborn
+streamlit
+plotly
+gitpython
+```
+
+
